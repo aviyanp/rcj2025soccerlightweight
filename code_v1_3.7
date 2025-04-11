@@ -1,0 +1,430 @@
+// Pin definitions for Teensy 4.1 - All pins are made variable for flexibility
+int irPins[12] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}; // IR sensor pins
+int motor1PWM = 14; // Front-right motor PWM pin
+int motor1Dir = 15; // Front-right motor direction pin
+int motor2PWM = 16; // Front-left motor PWM pin
+int motor2Dir = 17; // Front-left motor direction pin
+int motor3PWM = 18; // Back-left motor PWM pin
+int motor3Dir = 19; // Back-left motor direction pin
+int motor4PWM = 20; // Back-right motor PWM pin
+int motor4Dir = 21; // Back-right motor direction pin
+
+// IMU related pins (for orientation detection)
+int imuSDAPin = 22; // I2C SDA for IMU
+int imuSCLPin = 23; // I2C SCL for IMU
+
+// Other configurable parameters
+int minSignalThreshold = 100;    // Minimum signal strength to react to
+int maxMotorSpeed = 255;         // Maximum motor speed (0-255)
+int approachSpeed = 200;         // Speed when approaching the ball
+int rotateSpeed = 150;           // Speed when rotating to find the ball
+int pushSpeed = 255;             // Speed when pushing ball to goal
+int debugInterval = 500;         // How often to print debug info (ms)
+int ballFoundThreshold = 700;    // IR signal strength to consider ball is very close
+int frontSensorIndex = 0;        // Index of the sensor at the front of the robot
+
+// Color signatures for Pixy camera
+#define YELLOW_GOAL_SIG 1  // Pixy signature for yellow goal
+#define BLUE_GOAL_SIG 2    // Pixy signature for blue goal
+#define OUR_GOAL_COLOR BLUE_GOAL_SIG  // Change this based on your team's goal color
+
+// Variables for storing sensor readings and calculated values
+int irValues[12];
+int strongestSignal = 0;
+int strongestIndex = -1;
+float currentHeading = 0;  // Current robot heading from IMU in degrees
+unsigned long lastDebugTime = 0;
+boolean ballFound = false;
+boolean ballIsClose = false;
+boolean goalFound = false;
+int goalX = 0;            // X-coordinate of the goal (from Pixy)
+int goalY = 0;            // Y-coordinate of the goal (from Pixy)
+int goalWidth = 0;        // Width of the goal (from Pixy)
+int goalHeight = 0;       // Height of the goal (from Pixy)
+int goalSignature = 0;    // Color signature of detected goal
+
+// State machine states
+enum RobotState {
+  FIND_BALL,        // Rotating to find the ball
+  APPROACH_BALL,    // Moving toward the ball
+  FIND_GOAL,        // Ball acquired, finding goal
+  PUSH_TO_GOAL      // Pushing ball toward goal
+};
+RobotState currentState = FIND_BALL;
+
+// Include necessary libraries
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <Pixy2.h>
+
+// Create objects for sensors
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+Pixy2 pixy;
+
+void setup() {
+  // Initialize IR sensors as input
+  for (int i = 0; i < 12; i++) {
+    pinMode(irPins[i], INPUT);
+  }
+  
+  // Initialize motor pins
+  pinMode(motor1PWM, OUTPUT);
+  pinMode(motor1Dir, OUTPUT);
+  pinMode(motor2PWM, OUTPUT);
+  pinMode(motor2Dir, OUTPUT);
+  pinMode(motor3PWM, OUTPUT);
+  pinMode(motor3Dir, OUTPUT);
+  pinMode(motor4PWM, OUTPUT);
+  pinMode(motor4Dir, OUTPUT);
+  
+  // Initialize Serial Monitor for debugging
+  Serial.begin(115200);
+  Serial.println("RoboCup Junior IR Ball Tracking Robot Initialized");
+  
+  // Initialize IMU
+  if (!bno.begin()) {
+    Serial.println("No BNO055 detected. Check your wiring!");
+  } else {
+    Serial.println("IMU initialized");
+    bno.setExtCrystalUse(true);
+    delay(1000); // Give the IMU time to stabilize
+  }
+  
+  // Initialize Pixy camera
+  pixy.init();
+  Serial.println("Pixy camera initialized");
+}
+
+void loop() {
+  // Read all IR sensors and find the strongest signal
+  readIRSensors();
+  
+  // Update IMU data
+  updateIMU();
+  
+  // Debug output at regular intervals
+  unsigned long currentTime = millis();
+  if (currentTime - lastDebugTime > debugInterval) {
+    printDebugInfo();
+    lastDebugTime = currentTime;
+  }
+  
+  // State machine for robot behavior
+  switch (currentState) {
+    case FIND_BALL:
+      // Rotate until we find the ball
+      rotateToBall();
+      // If the ball is detected and in front, move to approach state
+      if (ballFound && isInFront()) {
+        currentState = APPROACH_BALL;
+        Serial.println("Transitioning to APPROACH_BALL state");
+      }
+      break;
+      
+    case APPROACH_BALL:
+      // Move toward the ball
+      approachBall();
+      // If we lost the ball, go back to finding it
+      if (!ballFound) {
+        currentState = FIND_BALL;
+        Serial.println("Ball lost. Transitioning to FIND_BALL state");
+      }
+      // If the ball is very close, look for the goal
+      else if (ballIsClose) {
+        currentState = FIND_GOAL;
+        Serial.println("Ball is close. Transitioning to FIND_GOAL state");
+      }
+      break;
+      
+    case FIND_GOAL:
+      // Find the goal using Pixy camera while keeping the ball
+      findGoal();
+      // If we lost the ball, go back to finding it
+      if (!ballFound) {
+        currentState = FIND_BALL;
+        Serial.println("Ball lost. Transitioning to FIND_BALL state");
+      }
+      // If goal is found, push the ball to the goal
+      else if (goalFound) {
+        currentState = PUSH_TO_GOAL;
+        Serial.println("Goal found. Transitioning to PUSH_TO_GOAL state");
+      }
+      break;
+      
+    case PUSH_TO_GOAL:
+      // Push the ball toward the goal
+      pushToGoal();
+      // If we lost the ball, go back to finding it
+      if (!ballFound) {
+        currentState = FIND_BALL;
+        Serial.println("Ball lost. Transitioning to FIND_BALL state");
+      }
+      // If we lost the goal, go back to finding it
+      else if (!goalFound) {
+        currentState = FIND_GOAL;
+        Serial.println("Goal lost. Transitioning to FIND_GOAL state");
+      }
+      break;
+  }
+  
+  delay(10); // Small delay for stability
+}
+
+void readIRSensors() {
+  // Reset variables
+  strongestSignal = 0;
+  strongestIndex = -1;
+  ballFound = false;
+  ballIsClose = false;
+  
+  // Read all sensors and find the strongest signal
+  for (int i = 0; i < 12; i++) {
+    irValues[i] = analogRead(irPins[i]);
+    
+    if (irValues[i] > strongestSignal) {
+      strongestSignal = irValues[i];
+      strongestIndex = i;
+    }
+  }
+  
+  // Check if the signal is strong enough to follow
+  if (strongestSignal > minSignalThreshold) {
+    ballFound = true;
+    
+    // Check if the ball is very close
+    if (strongestSignal > ballFoundThreshold) {
+      ballIsClose = true;
+    }
+  }
+}
+
+void updateIMU() {
+  // Get orientation data from the IMU
+  sensors_event_t event;
+  bno.getEvent(&event);
+  
+  // Update heading (yaw) in degrees
+  currentHeading = event.orientation.x; // x is the heading/yaw in the BNO055
+}
+
+boolean isInFront() {
+  // Check if the ball is roughly in front of the robot
+  // This assumes sensor 0 is at the front, and we accept a range of positions
+  int positionDifference = abs((frontSensorIndex - strongestIndex + 12) % 12);
+  return (positionDifference <= 1 || positionDifference >= 11);
+}
+
+void rotateToBall() {
+  if (!ballFound) {
+    // No ball found, rotate slowly to search
+    rotateClockwise(rotateSpeed);
+  } else {
+    // Ball found, rotate to face it
+    int positionDifference = (frontSensorIndex - strongestIndex + 12) % 12;
+    
+    if (positionDifference == 0) {
+      // Ball is in front, stop rotating
+      stopMotors();
+    } else if (positionDifference < 6 || positionDifference == 11) {
+      // Rotate counterclockwise
+      int speed = map(positionDifference, 1, 6, rotateSpeed/2, rotateSpeed);
+      rotateCounterClockwise(speed);
+    } else {
+      // Rotate clockwise
+      int speed = map(12 - positionDifference, 1, 6, rotateSpeed/2, rotateSpeed);
+      rotateClockwise(speed);
+    }
+  }
+}
+
+void approachBall() {
+  // Move directly toward the ball
+  moveForward(approachSpeed);
+  
+  // If the ball isn't directly in front, adjust rotation slightly
+  if (strongestIndex != frontSensorIndex) {
+    int positionDifference = (frontSensorIndex - strongestIndex + 12) % 12;
+    
+    if (positionDifference < 6) {
+      // Need slight counterclockwise adjustment
+      setMotor(motor1PWM, motor1Dir, approachSpeed * 0.7);
+      setMotor(motor4PWM, motor4Dir, approachSpeed * 0.7);
+    } else {
+      // Need slight clockwise adjustment
+      setMotor(motor2PWM, motor2Dir, approachSpeed * 0.7);
+      setMotor(motor3PWM, motor3Dir, approachSpeed * 0.7);
+    }
+  }
+}
+
+void findGoal() {
+  // Reset goal found flag
+  goalFound = false;
+  
+  // Use Pixy camera to detect goals
+  pixy.ccc.getBlocks();
+  
+  // Look for our opponent's goal (not our own)
+  for (int i = 0; i < pixy.ccc.numBlocks; i++) {
+    if (pixy.ccc.blocks[i].m_signature == YELLOW_GOAL_SIG || 
+        pixy.ccc.blocks[i].m_signature == BLUE_GOAL_SIG) {
+        
+      // Check if this is opponent's goal, not our own
+      if (pixy.ccc.blocks[i].m_signature != OUR_GOAL_COLOR) {
+        goalFound = true;
+        goalSignature = pixy.ccc.blocks[i].m_signature;
+        goalX = pixy.ccc.blocks[i].m_x;
+        goalY = pixy.ccc.blocks[i].m_y;
+        goalWidth = pixy.ccc.blocks[i].m_width;
+        goalHeight = pixy.ccc.blocks[i].m_height;
+        break;
+      }
+    }
+  }
+  
+  // If goal is found, rotate to align with it while keeping the ball
+  if (goalFound) {
+    // Gently rotate toward the goal
+    // Pixy's frame is 0,0 at top left, 319,199 at bottom right
+    int centerX = 160; // Center of Pixy's frame
+    int rotationSpeed;
+    
+    if (abs(goalX - centerX) < 20) {
+      // Goal is centered, stop rotating
+      stopMotors();
+    } else if (goalX < centerX) {
+      // Goal is to the left, rotate counterclockwise
+      rotationSpeed = map(centerX - goalX, 0, 160, 0, rotateSpeed/2);
+      rotateCounterClockwise(rotationSpeed);
+    } else {
+      // Goal is to the right, rotate clockwise
+      rotationSpeed = map(goalX - centerX, 0, 160, 0, rotateSpeed/2);
+      rotateClockwise(rotationSpeed);
+    }
+  } else {
+    // No goal found, rotate slowly to search
+    // But only if the ball is very close (to keep it in place)
+    if (ballIsClose) {
+      rotateClockwise(rotateSpeed/2);
+    } else {
+      // Keep approaching the ball while searching
+      approachBall();
+    }
+  }
+}
+
+void pushToGoal() {
+  // Verify we still see the goal
+  pixy.ccc.getBlocks();
+  goalFound = false;
+  
+  for (int i = 0; i < pixy.ccc.numBlocks; i++) {
+    if (pixy.ccc.blocks[i].m_signature == goalSignature) {
+      goalFound = true;
+      goalX = pixy.ccc.blocks[i].m_x;
+      goalY = pixy.ccc.blocks[i].m_y;
+      break;
+    }
+  }
+  
+  if (goalFound) {
+    // Move toward the goal at full speed while pushing the ball
+    moveForward(pushSpeed);
+    
+    // Make small steering adjustments if needed
+    int centerX = 160; // Center of Pixy's frame
+    if (goalX < centerX - 30) {
+      // Goal is to the left, adjust slightly
+      setMotor(motor1PWM, motor1Dir, pushSpeed * 0.8);
+      setMotor(motor4PWM, motor4Dir, pushSpeed * 0.8);
+    } else if (goalX > centerX + 30) {
+      // Goal is to the right, adjust slightly
+      setMotor(motor2PWM, motor2Dir, pushSpeed * 0.8);
+      setMotor(motor3PWM, motor3Dir, pushSpeed * 0.8);
+    }
+  } else {
+    // If we lost sight of the goal but still have the ball, go back to find goal
+    stopMotors();
+  }
+}
+
+void moveForward(int speed) {
+  setMotor(motor1PWM, motor1Dir, speed);
+  setMotor(motor2PWM, motor2Dir, speed);
+  setMotor(motor3PWM, motor3Dir, speed);
+  setMotor(motor4PWM, motor4Dir, speed);
+}
+
+void rotateClockwise(int speed) {
+  setMotor(motor1PWM, motor1Dir, -speed);
+  setMotor(motor2PWM, motor2Dir, speed);
+  setMotor(motor3PWM, motor3Dir, -speed);
+  setMotor(motor4PWM, motor4Dir, speed);
+}
+
+void rotateCounterClockwise(int speed) {
+  setMotor(motor1PWM, motor1Dir, speed);
+  setMotor(motor2PWM, motor2Dir, -speed);
+  setMotor(motor3PWM, motor3Dir, speed);
+  setMotor(motor4PWM, motor4Dir, -speed);
+}
+
+// Function to set motor speed and direction
+void setMotor(int pwmPin, int dirPin, int speed) {
+  if (speed >= 0) {
+    digitalWrite(dirPin, HIGH);
+    analogWrite(pwmPin, speed);
+  } else {
+    digitalWrite(dirPin, LOW);
+    analogWrite(pwmPin, -speed);
+  }
+}
+
+// Function to stop all motors
+void stopMotors() {
+  analogWrite(motor1PWM, 0);
+  analogWrite(motor2PWM, 0);
+  analogWrite(motor3PWM, 0);
+  analogWrite(motor4PWM, 0);
+}
+
+void printDebugInfo() {
+  Serial.print("State: ");
+  switch(currentState) {
+    case FIND_BALL: Serial.print("FIND_BALL"); break;
+    case APPROACH_BALL: Serial.print("APPROACH_BALL"); break;
+    case FIND_GOAL: Serial.print("FIND_GOAL"); break;
+    case PUSH_TO_GOAL: Serial.print("PUSH_TO_GOAL"); break;
+  }
+  Serial.print(" | ");
+  
+  Serial.print("Ball: ");
+  if (ballFound) {
+    Serial.print("Found at sensor ");
+    Serial.print(strongestIndex);
+    Serial.print(", Strength: ");
+    Serial.print(strongestSignal);
+    if (ballIsClose) Serial.print(" (CLOSE)");
+  } else {
+    Serial.print("Not found");
+  }
+  Serial.print(" | ");
+  
+  Serial.print("Heading: ");
+  Serial.print(currentHeading);
+  Serial.print(" | ");
+  
+  Serial.print("Goal: ");
+  if (goalFound) {
+    Serial.print("Found at (");
+    Serial.print(goalX);
+    Serial.print(",");
+    Serial.print(goalY);
+    Serial.print("), Color: ");
+    Serial.print(goalSignature == YELLOW_GOAL_SIG ? "YELLOW" : "BLUE");
+  } else {
+    Serial.print("Not found");
+  }
+  Serial.println();
+}
