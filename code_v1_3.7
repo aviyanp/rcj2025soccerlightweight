@@ -1,36 +1,41 @@
 #include <Arduino.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_LSM303_U.h>
+
+// IMU setup for LSM303DLHC
+Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(12345);
 
 // Pin definitions
-// Define IR sensor pins (analog input)
 #define NUM_SENSORS 12
 const int IR_PINS[NUM_SENSORS] = {A11, A10, A12, A13, A14, A15, A0, A1, A2, A3, A4, A5};
-
-// Define motor control pins for DRV8874 motor driver (PWM and DIR for each motor)
-const int MOTOR1_PWM = 2; // Motor 1
+const int MOTOR1_PWM = 2;
 const int MOTOR1_DIR = 7;
-const int MOTOR2_PWM = 3; // Motor 2
+const int MOTOR2_PWM = 3;
 const int MOTOR2_DIR = 8;
-const int MOTOR3_PWM = 4; // Motor 3
+const int MOTOR3_PWM = 4;
 const int MOTOR3_DIR = 9;
-const int MOTOR4_PWM = 6; // Motor 4 (MC5)
+const int MOTOR4_PWM = 6;
 const int MOTOR4_DIR = 11;
 
-// Variables for IR signal processing
+// Variables
 int sensorValues[NUM_SENSORS];
 int strongestSignalIndex = -1;
 int strongestSignalValue = 0;
+float initialHeading = 0.0;
+float currentHeading = 0.0;
 
 // Thresholds
-const int STOP_THRESHOLD = 800;  // Threshold to stop before the ball (adjust as needed)
-const int CLOSE_THRESHOLD = 700;  // Threshold to determine "very close" to the ball
+const int STOP_THRESHOLD = 800;  // Stop threshold for the ball
+const int ALIGN_THRESHOLD = 700; // Alignment threshold for the ball
 
 // Function prototypes
+void initializeIMU();
+float getHeading();
+void findStrongestSignal();
 void moveTowardsBall();
-void pushBallOffCenter();
-void reposition();
-void moveToGoal();
+void alignWithBall();
+void pushBallStraight();
 
-// Setup function
 void setup() {
     Serial.begin(115200);
 
@@ -49,14 +54,51 @@ void setup() {
     pinMode(MOTOR4_PWM, OUTPUT);
     pinMode(MOTOR4_DIR, OUTPUT);
 
-    Serial.println("Robot initialized and ready to follow the ball.");
+    // Initialize IMU
+    initializeIMU();
+    initialHeading = getHeading();
+
+    Serial.println("Robot initialized and ready.");
 }
 
-// Main loop
 void loop() {
-    // Find the strongest IR signal
-    strongestSignalValue = 0; // Reset the strongest signal value
-    strongestSignalIndex = -1; // Reset the strongest signal index
+    // Step 1: Find the strongest IR signal
+    findStrongestSignal();
+
+    // Step 2: If a strong signal is detected, align with the ball
+    if (strongestSignalValue >= ALIGN_THRESHOLD) {
+        alignWithBall();
+        pushBallStraight();
+    } else {
+        // Step 3: Move toward the ball
+        moveTowardsBall();
+    }
+}
+
+void initializeIMU() {
+    if (!mag.begin()) {
+        Serial.println("Failed to initialize LSM303DLHC!");
+        while (1);
+    }
+}
+
+float getHeading() {
+    sensors_event_t event;
+    mag.getEvent(&event);
+
+    // Calculate the heading in degrees
+    float heading = atan2(event.magnetic.y, event.magnetic.x) * 180 / PI;
+
+    // Normalize the heading to 0-360 degrees
+    if (heading < 0) {
+        heading += 360;
+    }
+    return heading;
+}
+
+void findStrongestSignal() {
+    strongestSignalValue = 0;
+    strongestSignalIndex = -1;
 
     for (int i = 0; i < NUM_SENSORS; i++) {
         sensorValues[i] = analogRead(IR_PINS[i]);
@@ -65,105 +107,71 @@ void loop() {
             strongestSignalIndex = i;
         }
     }
-
-    // Move towards the ball
-    moveTowardsBall();
-
-    // Stop when close to the ball
-    if (strongestSignalValue >= CLOSE_THRESHOLD) {
-        delay(500);  // Pause briefly
-        pushBallOffCenter();  // Push the ball slightly off-center
-        reposition();  // Reposition the robot
-        moveToGoal();  // Move towards the goal with the ball
-    }
 }
 
-// Function to move towards the ball
 void moveTowardsBall() {
-    if (strongestSignalValue >= STOP_THRESHOLD) {
-        // Stop the motors
-        analogWrite(MOTOR1_PWM, 0);
-        analogWrite(MOTOR2_PWM, 0);
-        analogWrite(MOTOR3_PWM, 0);
-        analogWrite(MOTOR4_PWM, 0);
+    int speed = 200;
+    if (strongestSignalIndex < NUM_SENSORS / 2) {
+        // Move left
+        analogWrite(MOTOR1_PWM, speed);
+        analogWrite(MOTOR2_PWM, speed);
+        digitalWrite(MOTOR1_DIR, LOW);
+        digitalWrite(MOTOR2_DIR, HIGH);
+        analogWrite(MOTOR3_PWM, speed);
+        analogWrite(MOTOR4_PWM, speed);
+        digitalWrite(MOTOR3_DIR, HIGH);
+        digitalWrite(MOTOR4_DIR, LOW);
     } else {
-        // Move towards the ball (strafe in the strongest signal direction)
-        int speed = 200;  // Adjust speed as needed
-        if (strongestSignalIndex < NUM_SENSORS / 2) {
-            // Move left
-            analogWrite(MOTOR1_PWM, speed);
-            analogWrite(MOTOR2_PWM, speed);
-            digitalWrite(MOTOR1_DIR, LOW);  // Reverse
-            digitalWrite(MOTOR2_DIR, HIGH); // Forward
-            analogWrite(MOTOR3_PWM, speed);
-            analogWrite(MOTOR4_PWM, speed);
-            digitalWrite(MOTOR3_DIR, HIGH); // Forward
-            digitalWrite(MOTOR4_DIR, LOW);  // Reverse
-        } else {
-            // Move right
-            analogWrite(MOTOR1_PWM, speed);
-            analogWrite(MOTOR2_PWM, speed);
-            digitalWrite(MOTOR1_DIR, HIGH); // Forward
-            digitalWrite(MOTOR2_DIR, LOW);  // Reverse
-            analogWrite(MOTOR3_PWM, speed);
-            analogWrite(MOTOR4_PWM, speed);
-            digitalWrite(MOTOR3_DIR, LOW);  // Reverse
-            digitalWrite(MOTOR4_DIR, HIGH); // Forward
-        }
+        // Move right
+        analogWrite(MOTOR1_PWM, speed);
+        analogWrite(MOTOR2_PWM, speed);
+        digitalWrite(MOTOR1_DIR, HIGH);
+        digitalWrite(MOTOR2_DIR, LOW);
+        analogWrite(MOTOR3_PWM, speed);
+        analogWrite(MOTOR4_PWM, speed);
+        digitalWrite(MOTOR3_DIR, LOW);
+        digitalWrite(MOTOR4_DIR, HIGH);
     }
 }
 
-// Function to push the ball slightly off-center
-void pushBallOffCenter() {
-    int speed = 150;  // Adjust speed as needed
+void alignWithBall() {
+    currentHeading = getHeading();
+    while (abs(currentHeading - initialHeading) > 5.0) { // Adjust alignment threshold as needed
+        int turnSpeed = 150;
+        if (currentHeading > initialHeading) {
+            // Turn left
+            analogWrite(MOTOR1_PWM, turnSpeed);
+            analogWrite(MOTOR2_PWM, turnSpeed);
+            digitalWrite(MOTOR1_DIR, LOW);
+            digitalWrite(MOTOR2_DIR, HIGH);
+        } else {
+            // Turn right
+            analogWrite(MOTOR1_PWM, turnSpeed);
+            analogWrite(MOTOR2_PWM, turnSpeed);
+            digitalWrite(MOTOR1_DIR, HIGH);
+            digitalWrite(MOTOR2_DIR, LOW);
+        }
+        currentHeading = getHeading();
+    }
+    stopMotors();
+}
+
+void pushBallStraight() {
+    int speed = 200;
     analogWrite(MOTOR1_PWM, speed);
     analogWrite(MOTOR2_PWM, speed);
     analogWrite(MOTOR3_PWM, speed);
     analogWrite(MOTOR4_PWM, speed);
+    digitalWrite(MOTOR1_DIR, HIGH);
+    digitalWrite(MOTOR2_DIR, HIGH);
+    digitalWrite(MOTOR3_DIR, HIGH);
+    digitalWrite(MOTOR4_DIR, HIGH);
 
-    digitalWrite(MOTOR1_DIR, HIGH); // Forward
-    digitalWrite(MOTOR2_DIR, HIGH); // Forward
-    digitalWrite(MOTOR3_DIR, HIGH); // Forward
-    digitalWrite(MOTOR4_DIR, HIGH); // Forward
-
-    delay(1000);  // Push for 1 second (adjust as needed)
-    analogWrite(MOTOR1_PWM, 0);
-    analogWrite(MOTOR2_PWM, 0);
-    analogWrite(MOTOR3_PWM, 0);
-    analogWrite(MOTOR4_PWM, 0);
+    delay(1500); // Adjust delay to control how far the robot pushes forward
+    stopMotors();
 }
 
-// Function to reposition the robot
-void reposition() {
-    int speed = 150;  // Adjust speed as needed
-    analogWrite(MOTOR1_PWM, speed);
-    analogWrite(MOTOR2_PWM, speed);
-    analogWrite(MOTOR3_PWM, speed);
-    analogWrite(MOTOR4_PWM, speed);
-
-    digitalWrite(MOTOR1_DIR, LOW);  // Reverse
-    digitalWrite(MOTOR2_DIR, LOW);  // Reverse
-    digitalWrite(MOTOR3_DIR, LOW);  // Reverse
-    digitalWrite(MOTOR4_DIR, LOW);  // Reverse
-
-    delay(1000);  // Move back for 1 second (adjust as needed)
-    analogWrite(MOTOR1_PWM, 0);
-    analogWrite(MOTOR2_PWM, 0);
-    analogWrite(MOTOR3_PWM, 0);
-    analogWrite(MOTOR4_PWM, 0);
-}
-
-// Function to move towards the goal
-void moveToGoal() {
-    analogWrite(MOTOR1_PWM, 200);
-    analogWrite(MOTOR2_PWM, 200);
-    analogWrite(MOTOR3_PWM, 200);
-    analogWrite(MOTOR4_PWM, 200);
-    digitalWrite(MOTOR1_DIR, HIGH); // Forward
-    digitalWrite(MOTOR2_DIR, HIGH); // Forward
-    digitalWrite(MOTOR3_DIR, HIGH); // Forward
-    digitalWrite(MOTOR4_DIR, HIGH); // Forward
-    delay(3000);  // Move for 3 seconds (adjust as needed)
+void stopMotors() {
     analogWrite(MOTOR1_PWM, 0);
     analogWrite(MOTOR2_PWM, 0);
     analogWrite(MOTOR3_PWM, 0);
