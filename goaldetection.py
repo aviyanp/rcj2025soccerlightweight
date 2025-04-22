@@ -1,56 +1,65 @@
 # RoboCup Junior Soccer Lightweight - Goal Detection
 # For OpenMV3 R2 with OV7725-M7
+# Last updated: 2025-04-22
 
-import sensor, image, time, math
+import sensor, image, time
 from pyb import LED
 
-# Initialize LEDs for visual feedback
+# Initialize LEDs
 red_led = LED(1)
 green_led = LED(2)
 blue_led = LED(3)
 
-# Set up the camera
+# Setup camera
 sensor.reset()
-sensor.set_pixformat(sensor.RGB565)  # RGB565 color format
-sensor.set_framesize(sensor.QVGA)    # 320x240 resolution
-sensor.set_auto_gain(False)          # Turn off auto gain
-sensor.set_auto_whitebal(False)      # Turn off white balance
-sensor.skip_frames(time=2000)        # Let the camera adjust
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.skip_frames(time=2000)
 
-# Color thresholds in LAB color space [L min, L max, A min, A max, B min, B max]
-# These thresholds may need tuning for your specific lighting conditions
-yellow_threshold = [(50, 100, 0, 40, 40, 90)]      # Yellow goal
-blue_threshold = [(10, 60, -10, 10, -90, -30)]     # Blue goal
+# CALIBRATION MODE - Set to True to help find color thresholds
+CALIBRATION_MODE = True
 
-# Function to find the largest blob of a specified color
-def find_largest_blob(img, thresholds, min_area=200, min_density=0.5):
-    largest_blob = None
-    max_area = 0
+# More permissive color thresholds with wider ranges
+# These are intentionally broad to catch more potential matches
+yellow_threshold = [(30, 100, -20, 60, 30, 100)]  # Yellow goal (wider range)
+blue_threshold = [(0, 70, -20, 20, -100, -20)]    # Blue goal (wider range)
 
-    for blob in img.find_blobs(thresholds, pixels_threshold=100, area_threshold=min_area):
-        # Check if blob is rectangular enough
-        if blob.density() > min_density:  # Density = area/bounding_rectangle_area
-            if blob.area() > max_area:
-                max_area = blob.area()
-                largest_blob = blob
+# Counter for frames where no blobs were detected
+no_blob_counter = 0
 
-    return largest_blob
+def draw_detection_stats(img, yellow_count, blue_count):
+    """Draw detection statistics on the image"""
+    img.draw_string(5, 5, "FPS: %d" % clock.fps(), color=(255, 255, 255))
+    img.draw_string(5, 20, "Yellow blobs: %d" % yellow_count, color=(255, 255, 0))
+    img.draw_string(5, 35, "Blue blobs: %d" % blue_count, color=(0, 0, 255))
 
-# Function to determine if a blob is likely a goal
-def is_goal(blob, min_width=30, min_height=20, ratio_threshold=1.5):
-    if blob is None:
-        return False
+    global no_blob_counter
+    if yellow_count == 0 and blue_count == 0:
+        no_blob_counter += 1
+    else:
+        no_blob_counter = 0
 
-    # Check minimal dimensions
-    if blob.w() < min_width or blob.h() < min_height:
-        return False
+    # Display warning if no blobs detected for several frames
+    if no_blob_counter > 10:
+        img.draw_string(5, 50, "WARNING: No goals detected!", color=(255, 0, 0))
+        img.draw_string(5, 65, "Try adjusting thresholds", color=(255, 0, 0))
 
-    # Check aspect ratio - goals are typically wider than tall
-    aspect_ratio = blob.w() / blob.h()
-    if aspect_ratio < ratio_threshold:  # Not wide enough to be a goal
-        return False
+def calibration_mode(img):
+    """Display color information to help with threshold tuning"""
+    # Center coordinates
+    cx = img.width() // 2
+    cy = img.height() // 2
 
-    return True
+    # Draw crosshair at center
+    img.draw_cross(cx, cy, color=(255, 0, 0), size=10)
+
+    # Get color at center point and convert to LAB
+    center_rgb = img.get_pixel(cx, cy)
+    center_lab = image.rgb_to_lab((center_rgb[0], center_rgb[1], center_rgb[2]))
+
+    # Display LAB values
+    img.draw_string(5, 80, "Center LAB: %d,%d,%d" %
+                 (center_lab[0], center_lab[1], center_lab[2]), color=(255, 255, 255))
 
 # Main loop
 clock = time.clock()
@@ -59,38 +68,57 @@ while True:
     clock.tick()
     img = sensor.snapshot()
 
-    # Find the largest yellow and blue blobs
-    yellow_goal = find_largest_blob(img, yellow_threshold)
-    blue_goal = find_largest_blob(img, blue_threshold)
+    # Counters for detection statistics
+    yellow_count = 0
+    blue_count = 0
 
-    # Process yellow goal
-    if yellow_goal and is_goal(yellow_goal):
-        img.draw_rectangle(yellow_goal.rect(), color=(255, 255, 0))
-        img.draw_cross(yellow_goal.cx(), yellow_goal.cy(), color=(255, 255, 0))
-        img.draw_string(yellow_goal.x(), yellow_goal.y(), "Yellow Goal", color=(255, 255, 0))
+    # Find yellow goals with more permissive parameters
+    for blob in img.find_blobs(yellow_threshold,
+                              pixels_threshold=50,  # Lower minimum pixel count
+                              area_threshold=100,   # Lower minimum area
+                              merge=True):          # Merge nearby blobs
 
-        # Calculate how centered the goal is (-100 to 100, 0 = centered)
-        yellow_offset = (yellow_goal.cx() - img.width()//2) / (img.width()//2) * 100
-        img.draw_string(0, 10, f"Yellow offset: {int(yellow_offset)}", color=(255, 255, 255))
+        # More permissive density check
+        if blob.density() > 0.3:  # Lowered from 0.5
+            # Draw rectangle and cross
+            img.draw_rectangle(blob.rect(), color=(255, 255, 0))
+            img.draw_cross(blob.cx(), blob.cy(), color=(255, 255, 0))
 
-        green_led.on()  # Visual feedback
-    else:
-        green_led.off()
+            # Annotate with size information to help with debugging
+            img.draw_string(blob.x(), blob.y(),
+                          "%dx%d" % (blob.w(), blob.h()),
+                          color=(255, 255, 255))
 
-    # Process blue goal
-    if blue_goal and is_goal(blue_goal):
-        img.draw_rectangle(blue_goal.rect(), color=(0, 0, 255))
-        img.draw_cross(blue_goal.cx(), blue_goal.cy(), color=(0, 0, 255))
-        img.draw_string(blue_goal.x(), blue_goal.y(), "Blue Goal", color=(0, 0, 255))
+            yellow_count += 1
+            green_led.on()
+        else:
+            green_led.off()
 
-        # Calculate how centered the goal is (-100 to 100, 0 = centered)
-        blue_offset = (blue_goal.cx() - img.width()//2) / (img.width()//2) * 100
-        img.draw_string(0, 25, f"Blue offset: {int(blue_offset)}", color=(255, 255, 255))
+    # Find blue goals with more permissive parameters
+    for blob in img.find_blobs(blue_threshold,
+                              pixels_threshold=50,  # Lower minimum pixel count
+                              area_threshold=100,   # Lower minimum area
+                              merge=True):          # Merge nearby blobs
 
-        blue_led.on()  # Visual feedback
-    else:
-        blue_led.off()
+        # More permissive density check
+        if blob.density() > 0.3:  # Lowered from 0.5
+            # Draw rectangle and cross
+            img.draw_rectangle(blob.rect(), color=(0, 0, 255))
+            img.draw_cross(blob.cx(), blob.cy(), color=(0, 0, 255))
 
-    # Calculate and display FPS for performance monitoring
-    fps = clock.fps()
-    img.draw_string(0, 0, f"FPS: {int(fps)}", color=(255, 255, 255))
+            # Annotate with size information to help with debugging
+            img.draw_string(blob.x(), blob.y(),
+                          "%dx%d" % (blob.w(), blob.h()),
+                          color=(255, 255, 255))
+
+            blue_count += 1
+            blue_led.on()
+        else:
+            blue_led.off()
+
+    # Draw detection statistics
+    draw_detection_stats(img, yellow_count, blue_count)
+
+    # Show calibration information if in calibration mode
+    if CALIBRATION_MODE:
+        calibration_mode(img)
