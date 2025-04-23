@@ -28,9 +28,9 @@ yellow_threshold = [(60,  95,    # L: cut out turf (<60) but include blown-out y
                     8,   35)]   # B: turf will have B≈10–30; yellow will be >40 up into the max
 
 # Tighter blue range in LAB
-blue_threshold = [(20,  65,    # L: mid-dark to mid-bright
-                  -50, -15,   # A: lean solidly into blue (avoid green)
-                  -80, -30)]  # B: strong blue bias
+blue_threshold = [(25,  80,    # L: mid-dark to mid-bright
+                  -70, 20,   # A: lean solidly into blue (avoid green)
+                  -80, -10)]  # B: strong blue bias
 
 # Camera setup
 sensor.reset()
