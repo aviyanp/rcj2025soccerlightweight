@@ -15,9 +15,22 @@ ball_threshold = [(0, 70, -25, 25, -25, 25)]     # Expanded range for reflective
 
 # IMPROVED: Significantly looser blue threshold, especially for lightness (L channel)
 # This will detect both darker blue objects and lighter blue objects
-blue_threshold = [(10, 95, -60, 5, -100, -5)]    # Much wider LAB range for blue goal 
+#blue_threshold = [(10, 95, -60, 5, -100, -5)]    # Much wider LAB range for blue goal
 
-yellow_threshold = [(50, 85, -15, 50, 10, 70)]   # Yellow goal
+#yellow_threshold = [(50, 85, -15, 50, 10, 70)]   # Yellow goal
+#yellow_threshold = [(40, 100, -20, 50, 0, 80)]
+#yellow_threshold = [(60, 75,  10, 25,  30, 55)] # good but some super bright colors dont work
+
+
+# Bracket mid-dark turf out, and catch those bright highlights
+yellow_threshold = [(60,  95,    # L: cut out turf (<60) but include blown-out yellows (≤95)
+                    10,  30,    # A: keep in yellow-leaning zone
+                    8,   35)]   # B: turf will have B≈10–30; yellow will be >40 up into the max
+
+# Tighter blue range in LAB
+blue_threshold = [(20,  65,    # L: mid-dark to mid-bright
+                  -50, -15,   # A: lean solidly into blue (avoid green)
+                  -80, -30)]  # B: strong blue bias
 
 # Camera setup
 sensor.reset()
@@ -27,7 +40,8 @@ sensor.skip_frames(time=2000)
 sensor.set_auto_gain(False)          # Disable auto gain
 sensor.set_auto_whitebal(False)      # Disable auto white balance
 # IMPROVED: Adjust contrast to make blue more distinct
-sensor.set_contrast(1)
+sensor.set_contrast(2)
+sensor.set_auto_exposure(False, exposure_us=2000)  # try values between 20000–40000µs
 
 # Variables for tracking
 last_ball_time = 0
@@ -90,14 +104,14 @@ def find_reflective_sphere(img, threshold, pixels_min=10, area_min=20):
 def find_goal_blobs(img, threshold, pixels_min=20, area_min=50):
     """Find all potential goal blobs with improved filtering"""
     goal_blobs = []
-    
+
     # Find all blobs matching the color threshold
     for blob in img.find_blobs(threshold, pixels_threshold=pixels_min,
                               area_threshold=area_min, merge=True, margin=10):
-        
+
         # We'll collect all reasonable candidates and score them later
         goal_blobs.append(blob)
-    
+
     # Sort by area (largest first)
     goal_blobs.sort(key=lambda b: b.area(), reverse=True)
     return goal_blobs
@@ -105,68 +119,68 @@ def find_goal_blobs(img, threshold, pixels_min=20, area_min=50):
 # IMPROVED: Function to find the best goal blob with strong preference for larger objects
 def find_best_goal_blob(img, threshold, last_goal=None, color_name=""):
     global blue_goal_confidence, blue_goal_consecutive_frames
-    
+
     goal_blobs = find_goal_blobs(img, threshold)
-    
+
     if not goal_blobs:
         if color_name == "blue":
             blue_goal_consecutive_frames = max(0, blue_goal_consecutive_frames - 1)
         return None
-        
+
     # If we have multiple candidates, score them
     best_blob = None
     best_score = 0
-    
+
     for blob in goal_blobs:
         # Calculate base score from shape features
         aspect_ratio = blob.w() / blob.h() if blob.h() > 0 else 0
-        
+
         # IMPROVED: Much stronger preference for larger objects
         # This addresses the issue of small screw terminals being detected instead of larger goals
         size_score = min(1.0, blob.area() / 3000)  # Increased importance of size
-        
+
         # Skip very small blobs when larger ones are present
         # If this isn't the first blob and it's much smaller than the largest one
         if goal_blobs.index(blob) > 0 and blob.area() < goal_blobs[0].area() * 0.5:
             # Only consider this small blob if it has a very good goal-like shape
             if not (aspect_ratio > 1.2 and aspect_ratio < 4.0 and blob.density() > 0.5):
                 continue
-        
+
         # Basic rectangular shape score
         rect_score = 0
         if aspect_ratio >= 1.0 and aspect_ratio <= 6.0:
             # Score peaks at around 2.0 (typical goal ratio)
             rect_score = 1.0 - min(1.0, abs(aspect_ratio - 2.0) / 2.0)
-        
+
         # Density score (fullness of the rectangle)
         density_score = blob.density() if blob.density() <= 1.0 else 0
-        
+
         # Position score - goals are typically not at extreme top or bottom
         y_center_dist = abs((blob.cy() / img.height()) - 0.5)
         position_score = 1.0 - min(1.0, y_center_dist * 2)
-        
+
         # Calculate overall score with STRONG emphasis on size
         score = (rect_score * 0.2) + (size_score * 0.6) + (density_score * 0.1) + (position_score * 0.1)
-        
+
         # Add continuity bonus if this blob is near the last detected goal
         if last_goal is not None:
             dx = abs(blob.cx() - last_goal.cx())
             dy = abs(blob.cy() - last_goal.cy())
             distance = math.sqrt(dx*dx + dy*dy)
-            
+
             # If close to last position, add bonus
             if distance < 50:
                 score += 0.2
-        
+
         if score > best_score:
             best_score = score
             best_blob = blob
-    
+
     # Update tracking confidence
     if color_name == "blue" and best_blob:
         blue_goal_confidence = int(best_score * 100)
         blue_goal_consecutive_frames += 1
-    
+
     return best_blob
 
 # Function to estimate distance and physical dimensions
@@ -226,7 +240,11 @@ clock = time.clock()
 while True:
     clock.tick()
     img = sensor.snapshot()
-    
+    # BEGIN CHANGED CODE
+    r, g, b = img.get_pixel(img.width()//2, img.height()//2)
+    L, A, B = image.rgb_to_lab(r, g, b)
+    print("Goal LAB:", (L, A, B))
+    # END CHANGED CODE
     # Light denoising
     img.mean(1)
 
@@ -290,7 +308,7 @@ while True:
 
     # --- IMPROVED: Blue Goal Detection with tracking ---
     blue_goal = find_best_goal_blob(img, blue_threshold, last_blue_goal, "blue")
-    
+
     # Keep track of the last detected goal for continuity
     if blue_goal:
         last_blue_goal = blue_goal
