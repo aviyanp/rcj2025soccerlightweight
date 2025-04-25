@@ -22,15 +22,15 @@ pin_right.value(0)
 
 # Choose which goal color to track
 # Set to "blue" or "yellow"
-TARGET_GOAL_COLOR = "blue"
+TARGET_GOAL_COLOR = "yellow"
 
 # Special thresholds for highly reflective black ball with white reflections
 ball_threshold = [(0, 70, -25, 25, -25, 25)]     # Expanded range for reflective black with white spots
 
 # Bracket mid-dark turf out, and catch those bright highlights
-yellow_threshold = [(60,  95,    # L: cut out turf (<60) but include blown-out yellows (≤95)
-                    10,  30,    # A: keep in yellow-leaning zone
-                    8,   35)]   # B: turf will have B≈10–30; yellow will be >40 up into the max
+yellow_threshold = [(55,  120,    # L: cut out turf (<60) but include blown-out yellows (≤95)
+                    -30,  15,    # A: keep in yellow-leaning zone
+                    15,   50)]   # B: turf will have B≈10–30; yellow will be >40 up into the max
 
 # Tighter blue range in LAB
 blue_threshold = [(25,  80,    # L: mid-dark to mid-bright
@@ -244,17 +244,17 @@ def set_goal_position_pins(goal_blob, img):
     pin_left.value(0)
     pin_center.value(0)
     pin_right.value(0)
-    
+
     if goal_blob is None:
         return None
-    
+
     # Define regions (left, center, right)
     center_x = img.width() // 2
     left_boundary = center_x - img.width() // 6    # 1/3 of half width
     right_boundary = center_x + img.width() // 6   # 1/3 of half width
-    
+
     goal_x = goal_blob.cx()
-    
+
     # Set pins based on position
     if goal_x < left_boundary:
         pin_left.value(1)
@@ -272,11 +272,11 @@ clock = time.clock()
 while True:
     clock.tick()
     img = sensor.snapshot()
-    
+
     r, g, b = img.get_pixel(img.width()//2, img.height()//2)
     L, A, B = image.rgb_to_lab(r, g, b)
     print("Goal LAB:", (L, A, B))
-    
+
     # Light denoising
     img.mean(1)
 
@@ -350,7 +350,7 @@ while True:
         goal_led = green_led  # Using green LED for yellow goal
         goal_color = (255, 255, 0)  # RGB color for yellow
         goal_color_name = "Yellow"
-    
+
     # Detect the selected goal color
     goal = find_best_goal_blob(img, goal_threshold, last_goal)
 
@@ -375,18 +375,18 @@ while True:
         # Send goal data with confidence information - using string concatenation instead of f-strings
         uart.write(TARGET_GOAL_COLOR+","+str(goal_dist)+","+str(goal_theta)+","+
                   str(goal_width)+","+str(goal_height)+","+str(goal_confidence)+"\n")
-        
+
         # Set position pins for the detected goal
         position = set_goal_position_pins(goal, img)
         if position:
-            img.draw_string(goal.x(), goal.y()-20, 
+            img.draw_string(goal.x(), goal.y()-20,
                            "POS: " + position, color=goal_color)
     else:
         goal_led.off()
         # Reset consecutive frames if no detection for too long
         if goal_consecutive_frames > 5:
             goal_consecutive_frames = 0
-        
+
         # Reset pins when no goal is detected
         pin_left.value(0)
         pin_center.value(0)
