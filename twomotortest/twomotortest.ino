@@ -53,6 +53,7 @@ void setup() {
   Serial.println("  'M2:speed' - Set motor 2 speed (-100 to 100)");
   Serial.println("  'STOP' - Stop both motors");
   Serial.println("  'TEST' - Run motor test sequence");
+  runMotorTest();
 }
 
 void loop() {

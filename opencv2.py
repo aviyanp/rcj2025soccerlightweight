@@ -28,13 +28,13 @@ TARGET_GOAL_COLOR = "yellow"
 ball_threshold = [(0, 70, -25, 25, -25, 25)]     # Expanded range for reflective black with white spots
 
 # Bracket mid-dark turf out, and catch those bright highlights
-yellow_threshold = [(55,  120,    # L: cut out turf (<60) but include blown-out yellows (≤95)
+yellow_threshold = [(40,  120,    # L: cut out turf (<60) but include blown-out yellows (≤95)
                     -30,  15,    # A: keep in yellow-leaning zone
                     15,   50)]   # B: turf will have B≈10–30; yellow will be >40 up into the max
 
 # Tighter blue range in LAB
-blue_threshold = [(25,  80,    # L: mid-dark to mid-bright
-                  -70, 20,   # A: lean solidly into blue (avoid green)
+blue_threshold = [(-15,  20 ,    # L: mid-dark to mid-bright
+                  10, 45,   # A: lean solidly into blue (avoid green)
                   -80, -10)]  # B: strong blue bias
 
 # Camera setup
