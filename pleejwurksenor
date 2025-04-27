@@ -1,0 +1,104 @@
+#include <Arduino.h>
+
+// Pin definitions
+#define NUM_SENSORS 12
+const int IR_PINS[NUM_SENSORS] = {29, 28, 25, 24, 13, 1, 31, 34, 35, 42, 43, 50};
+const int MOTOR1_PWM = 2;
+const int MOTOR1_DIR = 7;
+const int MOTOR2_PWM = 3;
+const int MOTOR2_DIR = 8;
+const int MOTOR3_PWM = 4;
+const int MOTOR3_DIR = 9;
+const int MOTOR4_PWM = 6;
+const int MOTOR4_DIR = 11;
+
+// Variables
+int sensorValues[NUM_SENSORS];
+int strongestSignalIndex = -1;
+int strongestSignalValue = 0;
+
+// Thresholds
+const int STOP_THRESHOLD = 800;  // Stop threshold for the ball
+
+// Function prototypes
+void findStrongestSignal();
+void moveTowardsBall();
+void stopMotors();
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize IR sensor pins
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        pinMode(IR_PINS[i], INPUT);
+    }
+
+    // Initialize motor control pins
+    pinMode(MOTOR1_PWM, OUTPUT);
+    pinMode(MOTOR1_DIR, OUTPUT);
+    pinMode(MOTOR2_PWM, OUTPUT);
+    pinMode(MOTOR2_DIR, OUTPUT);
+    pinMode(MOTOR3_PWM, OUTPUT);
+    pinMode(MOTOR3_DIR, OUTPUT);
+    pinMode(MOTOR4_PWM, OUTPUT);
+    pinMode(MOTOR4_DIR, OUTPUT);
+
+    Serial.println("Robot initialized and ready.");
+}
+
+void loop() {
+    // Step 1: Find the strongest IR signal
+    findStrongestSignal();
+
+    // Step 2: If a strong signal is detected, move toward the ball
+    if (strongestSignalValue >= STOP_THRESHOLD) {
+        moveTowardsBall();
+    } else {
+        stopMotors();
+    }
+}
+
+void findStrongestSignal() {
+    strongestSignalValue = 0;
+    strongestSignalIndex = -1;
+
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        sensorValues[i] = analogRead(IR_PINS[i]);
+        if (sensorValues[i] > strongestSignalValue) {
+            strongestSignalValue = sensorValues[i];
+            strongestSignalIndex = i;
+        }
+    }
+}
+
+void moveTowardsBall() {
+    int speed = 200;
+    if (strongestSignalIndex < NUM_SENSORS / 2) {
+        // Move left
+        analogWrite(MOTOR1_PWM, speed);
+        analogWrite(MOTOR2_PWM, speed);
+        digitalWrite(MOTOR1_DIR, LOW);
+        digitalWrite(MOTOR2_DIR, HIGH);
+        analogWrite(MOTOR3_PWM, speed);
+        analogWrite(MOTOR4_PWM, speed);
+        digitalWrite(MOTOR3_DIR, HIGH);
+        digitalWrite(MOTOR4_DIR, LOW);
+    } else {
+        // Move right
+        analogWrite(MOTOR1_PWM, speed);
+        analogWrite(MOTOR2_PWM, speed);
+        digitalWrite(MOTOR1_DIR, HIGH);
+        digitalWrite(MOTOR2_DIR, LOW);
+        analogWrite(MOTOR3_PWM, speed);
+        analogWrite(MOTOR4_PWM, speed);
+        digitalWrite(MOTOR3_DIR, LOW);
+        digitalWrite(MOTOR4_DIR, HIGH);
+    }
+}
+
+void stopMotors() {
+    analogWrite(MOTOR1_PWM, 0);
+    analogWrite(MOTOR2_PWM, 0);
+    analogWrite(MOTOR3_PWM, 0);
+    analogWrite(MOTOR4_PWM, 0);
+}   
