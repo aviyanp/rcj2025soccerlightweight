@@ -1,11 +1,9 @@
 import sensor, image, time, math
 from pyb import UART
-import rpc
 
-# Initialize RPC with UART for communication with Arduino
+# Initialize UART for communication with Arduino
 uart = UART(3, 115200, timeout_char=1000)  # Using UART3
 uart.init(115200, bits=8, parity=None, stop=1)
-interface = rpc.rpc_uart_slave(uart=uart)
 
 # Constants for the conical mirror setup
 MIRROR_CENTER_X = 160  # Default center X (will be calibrated)
@@ -312,14 +310,79 @@ def find_objects():
     # Return the results
     return results
 
-# Register the find_objects function with RPC
-interface.register_callback(find_objects)
+# UART setup (ensure this is not duplicated if already present from previous RPC setup)
+# If uart object was already created for RPC, it can be reused. Otherwise, create it.
+try:
+    if uart: # Check if uart object exists from a previous setup
+        uart.init(115200, bits=8, parity=None, stop=1, timeout_char=1000) # Re-init just in case
+except NameError: # uart was not defined, so define it
+    uart = UART(3, 115200, timeout_char=1000)
+    uart.init(115200, bits=8, parity=None, stop=1)
 
-# Create a clock for FPS calculation
-clock = time.clock()
+# Create a clock for FPS calculation (if not already defined)
+try:
+    if clock:
+        pass
+except NameError:
+    clock = time.clock()
 
 # Main loop
 while True:
     clock.tick()
-    # Process RPC requests
-    interface.loop()
+    # The find_objects() function should already be defined in your script
+    # and is assumed to handle image capture and blob detection, returning a dictionary.
+    # It also handles its own debug drawing on the image if needed.
+    data = find_objects() 
+
+    # Format the string for Arduino
+    # Ball
+    ball_str = '"ball":{'
+    if data['ball'].get('found', False): # Use .get for safety
+        ball_str += '"found":true,'
+        ball_str += '"angle":%.1f,' % data['ball'].get('angle', 0.0)
+        ball_str += '"distance":%.1f,' % data['ball'].get('distance', 0.0)
+        ball_str += '"confidence":%.1f' % data['ball'].get('confidence', 0.0)
+    else:
+        ball_str += '"found":false'
+    ball_str += '}'
+
+    # Yellow Goal
+    yellow_goal_str = '"yellow_goal":{'
+    if data['yellow_goal'].get('found', False):
+        yellow_goal_str += '"found":true,'
+        yellow_goal_str += '"angle":%.1f,' % data['yellow_goal'].get('angle', 0.0)
+        yellow_goal_str += '"distance":%.1f' % data['yellow_goal'].get('distance', 0.0)
+    else:
+        yellow_goal_str += '"found":false'
+    yellow_goal_str += '}'
+
+    # Blue Goal
+    blue_goal_str = '"blue_goal":{'
+    if data['blue_goal'].get('found', False):
+        blue_goal_str += '"found":true,'
+        blue_goal_str += '"angle":%.1f,' % data['blue_goal'].get('angle', 0.0)
+        blue_goal_str += '"distance":%.1f' % data['blue_goal'].get('distance', 0.0)
+    else:
+        blue_goal_str += '"found":false'
+    blue_goal_str += '}'
+
+    # Combine and send
+    # Ensure frame_count is incremented if find_objects() doesn't do it and it's used for debug prints
+    global frame_count # Assuming frame_count is a global incremented in find_objects or here
+    try:
+        frame_count +=1 
+    except NameError: # if frame_count is not global or not defined yet
+        frame_count = 1
+
+
+    output_str = ball_str + " " + yellow_goal_str + " " + blue_goal_str + "\\n"
+    uart.write(output_str)
+
+    # Debug print from OpenMV side (less frequently)
+    if ENABLE_DEBUG_PRINTS and frame_count % 30 == 0:
+        # The find_objects() function might already print FPS and its own results.
+        # This print confirms what's sent to Arduino.
+        # print("FPS: {:.1f}".format(clock.fps())) # This might be redundant if find_objects prints it
+        print("Sent to Arduino:", output_str.strip())
+
+    time.sleep_ms(50) # Send data at approximately 20Hz
