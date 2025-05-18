@@ -1,124 +1,170 @@
-# RoboCup Junior Soccer Lightweight - Goal Detection
-# For OpenMV3 R2 with OV7725-M7
-# Last updated: 2025-04-22
+import sensor, image, time, math
+from pyb import UART, Pin
 
-import sensor, image, time
-from pyb import LED
+# UART setup (optional)
+uart = UART(3, 57600, timeout_char=1000)
 
-# Initialize LEDs
-red_led = LED(1)
-green_led = LED(2)
-blue_led = LED(3)
+# Direction pins
+pin_left = Pin('P0', Pin.OUT_PP)
+pin_center = Pin('P1', Pin.OUT_PP)
+pin_right = Pin('P2', Pin.OUT_PP)
+for pin in [pin_left, pin_center, pin_right]: pin.value(0)
 
-# Setup camera
+# Color thresholds
+ORANGE_THRESH = (40, 100, 20, 127, 20, 120)
+yellow_threshold = [(60, 115, -25, 5, 20, 65)]
+blue_threshold = [(-20, 30, 0, 50, -90, -5)]
+
+# Camera setup
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.skip_frames(time=2000)
+sensor.set_auto_gain(False)
+sensor.set_gainceiling(2)
+sensor.set_auto_whitebal(False)
+sensor.set_contrast(2)
+sensor.set_auto_exposure(False, exposure_us=7500)
 
-# CALIBRATION MODE - Set to True to help find color thresholds
-CALIBRATION_MODE = True
-
-# More permissive color thresholds with wider ranges
-# These are intentionally broad to catch more potential matches
-yellow_threshold = [(30, 100, -20, 60, 30, 100)]  # Yellow goal (wider range)
-blue_threshold = [(0, 70, -20, 20, -100, -20)]    # Blue goal (wider range)
-
-# Counter for frames where no blobs were detected
-no_blob_counter = 0
-
-def draw_detection_stats(img, yellow_count, blue_count):
-    """Draw detection statistics on the image"""
-    img.draw_string(5, 5, "FPS: %d" % clock.fps(), color=(255, 255, 255))
-    img.draw_string(5, 20, "Yellow blobs: %d" % yellow_count, color=(255, 255, 0))
-    img.draw_string(5, 35, "Blue blobs: %d" % blue_count, color=(0, 0, 255))
-
-    global no_blob_counter
-    if yellow_count == 0 and blue_count == 0:
-        no_blob_counter += 1
+# Helper: goal pin logic
+def set_goal_position_pins(goal_blob, img):
+    pin_left.value(0)
+    pin_center.value(0)
+    pin_right.value(0)
+    if not goal_blob:
+        return None
+    cx = goal_blob.cx()
+    w = img.width()
+    if cx < w // 3:
+        pin_left.value(1)
+        return "LEFT"
+    elif cx > 2 * w // 3:
+        pin_right.value(1)
+        return "RIGHT"
     else:
-        no_blob_counter = 0
+        pin_center.value(1)
+        return "CENTER"
 
-    # Display warning if no blobs detected for several frames
-    if no_blob_counter > 10:
-        img.draw_string(5, 50, "WARNING: No goals detected!", color=(255, 0, 0))
-        img.draw_string(5, 65, "Try adjusting thresholds", color=(255, 0, 0))
+# Helper: best round orange blob
+def find_most_round_orange_blob(img, roi):
+    blobs = img.find_blobs([ORANGE_THRESH], roi=roi, pixels_threshold=20, area_threshold=20, merge=True)
+    best_blob = None
+    best_score = 0
+    for b in blobs:
+        if b.h() == 0:
+            continue
+        aspect_ratio = float(b.w()) / b.h()
+        roundness_score = 1.0 - abs(aspect_ratio - 1.0)
+        score = roundness_score * b.pixels()
+        if score > best_score:
+            best_score = score
+            best_blob = b
+    return best_blob
 
-def calibration_mode(img):
-    """Display color information to help with threshold tuning"""
-    # Center coordinates
-    cx = img.width() // 2
-    cy = img.height() // 2
-
-    # Draw crosshair at center
-    img.draw_cross(cx, cy, color=(255, 0, 0), size=10)
-
-    # Get color at center point and convert to LAB
-    center_rgb = img.get_pixel(cx, cy)
-    center_lab = image.rgb_to_lab((center_rgb[0], center_rgb[1], center_rgb[2]))
-
-    # Display LAB values
-    img.draw_string(5, 80, "Center LAB: %d,%d,%d" %
-                 (center_lab[0], center_lab[1], center_lab[2]), color=(255, 255, 255))
+# Helper: best goal blob
+def find_best_goal_blob(img, threshold):
+    blobs = img.find_blobs(threshold, pixels_threshold=20, area_threshold=50, merge=True)
+    if not blobs:
+        return None
+    blobs.sort(key=lambda b: b.area(), reverse=True)
+    return blobs[0]
 
 # Main loop
 clock = time.clock()
-
 while True:
     clock.tick()
     img = sensor.snapshot()
 
-    # Counters for detection statistics
-    yellow_count = 0
-    blue_count = 0
+    # Define ROIs
+    top_roi = (0, 0, img.width(), img.height() // 2)
+    bottom_roi = (0, img.height() // 2, img.width(), img.height() // 2)
 
-    # Find yellow goals with more permissive parameters
-    for blob in img.find_blobs(yellow_threshold,
-                              pixels_threshold=50,  # Lower minimum pixel count
-                              area_threshold=100,   # Lower minimum area
-                              merge=True):          # Merge nearby blobs
+    # Detect ball
+    far_blob = find_most_round_orange_blob(img, top_roi)
+    close_blob = find_most_round_orange_blob(img, bottom_roi)
+    ball_blob = close_blob if close_blob and (not far_blob or close_blob.pixels() > far_blob.pixels()) else far_blob
+    y_offset = img.height() // 2 if ball_blob == close_blob else 0
 
-        # More permissive density check
-        if blob.density() > 0.3:  # Lowered from 0.5
-            # Draw rectangle and cross
-            img.draw_rectangle(blob.rect(), color=(255, 255, 0))
-            img.draw_cross(blob.cx(), blob.cy(), color=(255, 255, 0))
+    # Image center
+    cx_img = img.width() // 2
+    cy_img = img.height() // 2
 
-            # Annotate with size information to help with debugging
-            img.draw_string(blob.x(), blob.y(),
-                          "%dx%d" % (blob.w(), blob.h()),
-                          color=(255, 255, 255))
+    # --- Ball Processing ---
+    ball_angle = 0
+    if ball_blob:
+        cx = ball_blob.cx()
+        cy = ball_blob.cy() + y_offset
+        dx = cx - cx_img
+        dy = cy - cy_img
+        ball_angle = math.degrees(math.atan2(dy, dx))
+        if ball_angle < 0:
+            ball_angle += 360
 
-            yellow_count += 1
-            green_led.on()
+        img.draw_rectangle([ball_blob.x(), ball_blob.y() + y_offset, ball_blob.w(), ball_blob.h()], color=(255, 128, 0))
+        img.draw_cross(cx, cy, color=(255, 128, 0))
+        img.draw_string(cx + 10, cy, "Ball: %.1f°" % ball_angle, color=(255, 128, 0))
+
+        if (ball_angle <= 30 or ball_angle >= 330):
+            pin_left.value(0)
+            pin_center.value(1)
+            pin_right.value(0)
+        elif 30 < ball_angle <= 150:
+            pin_left.value(0)
+            pin_center.value(0)
+            pin_right.value(1)
+        elif 210 <= ball_angle < 330:
+            pin_left.value(1)
+            pin_center.value(0)
+            pin_right.value(0)
         else:
-            green_led.off()
+            pin_left.value(0)
+            pin_center.value(0)
+            pin_right.value(0)
+    else:
+        pin_left.value(0)
+        pin_center.value(0)
+        pin_right.value(0)
 
-    # Find blue goals with more permissive parameters
-    for blob in img.find_blobs(blue_threshold,
-                              pixels_threshold=50,  # Lower minimum pixel count
-                              area_threshold=100,   # Lower minimum area
-                              merge=True):          # Merge nearby blobs
+    # --- Yellow Goal ---
+    yellow_blob = find_best_goal_blob(img, yellow_threshold)
+    yellow_angle = None
+    if yellow_blob:
+        x = yellow_blob.cx()
+        y = yellow_blob.cy()
+        dx = x - cx_img
+        dy = y - cy_img
+        yellow_angle = math.degrees(math.atan2(dy, dx))
+        if yellow_angle < 0:
+            yellow_angle += 360
 
-        # More permissive density check
-        if blob.density() > 0.3:  # Lowered from 0.5
-            # Draw rectangle and cross
-            img.draw_rectangle(blob.rect(), color=(0, 0, 255))
-            img.draw_cross(blob.cx(), blob.cy(), color=(0, 0, 255))
+        img.draw_rectangle(yellow_blob.rect(), color=(255, 255, 0))
+        img.draw_cross(x, y, color=(255, 255, 0))
+        img.draw_string(x + 10, y, "Y: %.1f°" % yellow_angle, color=(255, 255, 0))
 
-            # Annotate with size information to help with debugging
-            img.draw_string(blob.x(), blob.y(),
-                          "%dx%d" % (blob.w(), blob.h()),
-                          color=(255, 255, 255))
+        pos = set_goal_position_pins(yellow_blob, img)
+        if pos:
+            img.draw_string(yellow_blob.x(), yellow_blob.y() - 20, "YELLOW: " + pos, color=(255, 255, 0))
 
-            blue_count += 1
-            blue_led.on()
-        else:
-            blue_led.off()
+    # --- Blue Goal ---
+    blue_blob = find_best_goal_blob(img, blue_threshold)
+    blue_angle = None
+    if blue_blob:
+        x = blue_blob.cx()
+        y = blue_blob.cy()
+        dx = x - cx_img
+        dy = y - cy_img
+        blue_angle = math.degrees(math.atan2(dy, dx))
+        if blue_angle < 0:
+            blue_angle += 360
 
-    # Draw detection statistics
-    draw_detection_stats(img, yellow_count, blue_count)
+        img.draw_rectangle(blue_blob.rect(), color=(0, 0, 255))
+        img.draw_cross(x, y, color=(0, 0, 255))
+        img.draw_string(x + 10, y, "B: %.1f°" % blue_angle, color=(0, 0, 255))
 
-    # Show calibration information if in calibration mode
-    if CALIBRATION_MODE:
-        calibration_mode(img)
+    # Debug print
+    print("Ball: %.1f°, Yellow: %s, Blue: %s" % (
+        ball_angle,
+        "%.1f°" % yellow_angle if yellow_angle is not None else "None",
+        "%.1f°" % blue_angle if blue_angle is not None else "None"
+    ))
+    print("FPS:", clock.fps())
